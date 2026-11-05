@@ -1,0 +1,5 @@
+wrote 240000 rows x 201 columns to /home/user/data/org240k.parquet in 32.1s
+
+real	0m32.562s
+user	0m18.351s
+sys	0m14.381s

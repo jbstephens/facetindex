@@ -7,6 +7,6 @@ build/
 .pytest_cache/
 .ruff_cache/
 /data/
-/bench/out/
+/bench/out/idx*/
+/bench/out/*.sh
 *.parquet
-!tests/fixtures/*.parquet

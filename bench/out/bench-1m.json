@@ -1,0 +1,127 @@
+{
+ "label": "1m",
+ "source": "/home/user/data/org1m.parquet",
+ "cpu_count": 4,
+ "build_seconds": 62.16,
+ "artifact_bytes": 480643608,
+ "rows": 1000000,
+ "kinds": {
+  "categorical": 45,
+  "empty": 2,
+  "flag": 62,
+  "long_text": 2,
+  "numeric": 49,
+  "short_text": 40
+ },
+ "open_ms_cold": 360.7,
+ "warm_ms": 24635.2,
+ "attributes": 200,
+ "files": {
+  "ids.parquet": 627401,
+  "numeric_sorted.parquet": 141941466,
+  "postings.parquet": 65600391,
+  "stats.json": 197983,
+  "keys/* (total)": 126570078,
+  "values/* (total)": 145665496
+ },
+ "postings_count": 970,
+ "selectivity_median_rows": 459,
+ "results": [
+  {
+   "workload": "facetindex count (AND of 2-4 clauses)",
+   "n": 100,
+   "p50_ms": 2.0,
+   "p95_ms": 21.47,
+   "max_ms": 32.56,
+   "mean_ms": 6.22
+  },
+  {
+   "workload": "facetindex page 50 sorted by random attribute (warm keys)",
+   "n": 100,
+   "p50_ms": 2.25,
+   "p95_ms": 20.6,
+   "max_ms": 33.03,
+   "mean_ms": 6.27
+  },
+  {
+   "workload": "facetindex page 50 by id",
+   "n": 100,
+   "p50_ms": 2.17,
+   "p95_ms": 18.52,
+   "max_ms": 37.4,
+   "mean_ms": 6.25
+  },
+  {
+   "workload": "facetindex facets for all 111 facetable attrs",
+   "n": 100,
+   "p50_ms": 34.22,
+   "p95_ms": 76.42,
+   "max_ms": 107.04,
+   "mean_ms": 40.63
+  },
+  {
+   "workload": "facetindex facets incl. numeric histograms",
+   "n": 100,
+   "p50_ms": 166.31,
+   "p95_ms": 241.33,
+   "max_ms": 299.72,
+   "mean_ms": 172.53
+  },
+  {
+   "workload": "facetindex 26 saved-segment counts (one list render)",
+   "n": 50,
+   "p50_ms": 171.86,
+   "p95_ms": 206.07,
+   "max_ms": 210.7,
+   "mean_ms": 174.51
+  },
+  {
+   "workload": "facetindex export: first 25k matching ids",
+   "n": 50,
+   "p50_ms": 4.01,
+   "p95_ms": 18.43,
+   "max_ms": 38.36,
+   "mean_ms": 7.64
+  },
+  {
+   "workload": "facetindex count with text-contains on a short text attr",
+   "n": 100,
+   "p50_ms": 82.1,
+   "p95_ms": 106.21,
+   "max_ms": 135.26,
+   "mean_ms": 84.46
+  },
+  {
+   "workload": "duckdb-on-parquet count (same filters)",
+   "n": 100,
+   "p50_ms": 27.56,
+   "p95_ms": 40.5,
+   "max_ms": 46.79,
+   "mean_ms": 28.57
+  },
+  {
+   "workload": "duckdb-on-parquet page 50 sorted by random attribute",
+   "n": 50,
+   "p50_ms": 45.73,
+   "p95_ms": 62.82,
+   "max_ms": 69.82,
+   "mean_ms": 46.56
+  },
+  {
+   "workload": "duckdb-on-parquet facets for 20 attrs (one GROUP BY each)",
+   "n": 20,
+   "p50_ms": 632.96,
+   "p95_ms": 837.49,
+   "max_ms": 955.65,
+   "mean_ms": 646.69
+  },
+  {
+   "workload": "duckdb in-memory narrow table count (same filters)",
+   "n": 100,
+   "p50_ms": 28.01,
+   "p95_ms": 56.2,
+   "max_ms": 122.75,
+   "mean_ms": 30.94
+  }
+ ]
+}

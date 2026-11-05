@@ -1,0 +1,22 @@
+[build] [   0.1s] profiling
+[build] [  11.7s] profiled 200 attributes: flag=62, categorical=44, numeric=49, short_text=39, long_text=4, empty=2
+[build] [  11.7s] materialising narrow table
+[build] [  17.6s] building postings
+[build] [  27.1s] building numeric arrays and sort keys
+[build] [  41.2s] writing narrow values table
+{
+ "version": "timed",
+ "path": "bench/out/idx240k/versions/timed",
+ "rows": 240000,
+ "seconds": 49.346,
+ "bytes": 136613767,
+ "published": true,
+ "kinds": {
+  "flag": 62,
+  "short_text": 39,
+  "numeric": 49,
+  "categorical": 44,
+  "empty": 2,
+  "long_text": 4
+ }
+}

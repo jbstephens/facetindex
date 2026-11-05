@@ -1,0 +1,68 @@
+{
+ "label": "240k",
+ "results": [
+  {
+   "workload": "postgres wide text table: count (same filters, PK only)",
+   "n": 40,
+   "p50_ms": 395.15,
+   "p95_ms": 578.81,
+   "max_ms": 645.99,
+   "mean_ms": 392.17,
+   "timeouts": 0
+  },
+  {
+   "workload": "postgres wide text table: page 50 sorted by random attribute",
+   "n": 20,
+   "p50_ms": 388.05,
+   "p95_ms": 545.82,
+   "max_ms": 580.88,
+   "mean_ms": 394.65,
+   "timeouts": 0
+  },
+  {
+   "workload": "postgres wide text table: facets for 20 attrs (one GROUP BY each)",
+   "n": 10,
+   "p50_ms": 8243.1,
+   "p95_ms": 12224.87,
+   "max_ms": 12224.87,
+   "mean_ms": 8277.55,
+   "timeouts": 0
+  },
+  {
+   "workload": "postgres wide text table: facets for 20 attrs (unpivot, one pass)",
+   "n": 10,
+   "p50_ms": 422.57,
+   "p95_ms": 1125.94,
+   "max_ms": 1125.94,
+   "mean_ms": 488.23,
+   "timeouts": 0
+  },
+  {
+   "workload": "postgres jsonb + GIN (jsonb_path_ops): count, flag/category-only filters",
+   "n": 17,
+   "p50_ms": 4.02,
+   "p95_ms": 67.3,
+   "max_ms": 352.11,
+   "mean_ms": 30.96,
+   "timeouts": 0
+  },
+  {
+   "workload": "postgres narrow text table (no long text): count (same filters)",
+   "n": 40,
+   "p50_ms": 349.67,
+   "p95_ms": 544.96,
+   "max_ms": 591.39,
+   "mean_ms": 351.64,
+   "timeouts": 0
+  }
+ ],
+ "load_jsonb_seconds": 127.1,
+ "table_sizes": {
+  "entities": "765 MB",
+  "entities_doc": "533 MB",
+  "entities_narrow": "242 MB"
+ },
+ "shared_buffers": "1GB",
+ "partial_index_build_seconds_per_flag": 0.09,
+ "caveat": "local Postgres, NVMe, table in page cache; the production instance on network storage with a table larger than shared_buffers measured 2-4 s per scan"
+}

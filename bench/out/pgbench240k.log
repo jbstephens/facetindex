@@ -1,0 +1,20 @@
+loaded jsonb table + GIN in 127.1s
+postgres wide text table: count (same filters, PK only)                p50=   395.15 p95=   578.81 timeouts=0
+postgres wide text table: page 50 sorted by random attribute           p50=   388.05 p95=   545.82 timeouts=0
+postgres wide text table: facets for 20 attrs (one GROUP BY each)      p50=   8243.1 p95= 12224.87 timeouts=0
+postgres wide text table: facets for 20 attrs (unpivot, one pass)      p50=   422.57 p95=  1125.94 timeouts=0
+postgres jsonb + GIN (jsonb_path_ops): count, flag/category-only filters p50=     4.02 p95=     67.3 timeouts=0
+postgres narrow text table (no long text): count (same filters)        p50=   349.67 p95=   544.96 timeouts=0
+{
+ "label": "240k",
+ "load_jsonb_seconds": 127.1,
+ "table_sizes": {
+  "entities": "765 MB",
+  "entities_doc": "533 MB",
+  "entities_narrow": "242 MB"
+ },
+ "shared_buffers": "1GB",
+ "partial_index_build_seconds_per_flag": 0.09,
+ "caveat": "local Postgres, NVMe, table in page cache; the production instance on network storage with a table larger than shared_buffers measured 2-4 s per scan"
+}
+wrote /home/user/facetindex/bench/out/pgbench-240k.json

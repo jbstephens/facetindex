@@ -1,0 +1,50 @@
+  [build] [   0.1s] pass 1: lengths and fill
+  [build] [   3.2s] materialising narrow table (194 short, 4 long, 2 empty)
+  [build] [   5.5s] long text: fill bitmaps
+  [build] [   6.7s] sweep: statistics, postings, keys, numeric arrays, values
+  [build] [  20.2s] finalised flag=62, categorical=44, numeric=49, short_text=39, long_text=4, empty=2
+{
+ "label": "240k",
+ "source": "/home/user/data/org240k.parquet",
+ "cpu_count": 4,
+ "build_seconds": 20.31,
+ "artifact_bytes": 134411652,
+ "rows": 240000,
+ "kinds": {
+  "categorical": 44,
+  "empty": 2,
+  "flag": 62,
+  "long_text": 4,
+  "numeric": 49,
+  "short_text": 39
+ },
+ "open_ms_cold": 114.2,
+ "warm_ms": 6335.3,
+ "attributes": 200,
+ "files": {
+  "ids.parquet": 233361,
+  "numeric_sorted.parquet": 48687509,
+  "postings.parquet": 15977589,
+  "stats.json": 200397,
+  "keys/* (total)": 32676426,
+  "values/* (total)": 36595998
+ },
+ "postings_count": 933,
+ "selectivity_median_rows": 130
+}
+
+workload                                                                 p50 ms   p95 ms   max ms
+facetindex count (AND of 2-4 clauses)                                       0.3     3.83     5.85
+facetindex page 50 sorted by random attribute (warm keys)                  0.65     4.55     8.28
+facetindex page 50 by id                                                   0.43     4.32     7.08
+facetindex facets for all 110 facetable attrs                              9.22    18.59    25.39
+facetindex facets incl. numeric histograms                                40.01    63.61   109.46
+facetindex 26 saved-segment counts (one list render)                      40.32    47.65    59.83
+facetindex export: first 25k matching ids                                  1.63    13.44    21.87
+facetindex count with text-contains on a short text attr                  20.97    34.08     38.3
+duckdb-on-parquet count (same filters)                                    13.73    21.05    36.17
+duckdb-on-parquet page 50 sorted by random attribute                      18.67     28.5    31.76
+duckdb-on-parquet facets for 20 attrs (one GROUP BY each)                292.18   400.75   409.58
+duckdb in-memory narrow table count (same filters)                        13.75    26.11    33.18
+
+wrote /home/user/facetindex/bench/out/bench-240k.json
