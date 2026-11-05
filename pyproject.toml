@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facetindex"
+version = "0.1.0"
+description = "Versioned, pipeline-built facet index (roaring bitmaps + sort keys + stats) for wide, sparse, frequently reloaded attribute tables."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "pyroaring>=1.0",
+  "pyarrow>=15",
+  "duckdb>=1.0",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+pg = ["psycopg[binary]>=3.1"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8", "ruff>=0.5", "psycopg[binary]>=3.1"]
+
+[project.scripts]
+facetindex = "facetindex.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["facetindex*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "E702", "B905", "UP007", "UP045"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
