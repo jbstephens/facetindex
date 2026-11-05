@@ -27,6 +27,52 @@ the original problem statement, including why a per-entity "signals key" is the 
 index and the per-value bitmap is the one that makes multi-attribute search fast.
 [`docs/INTEGRATION.md`](docs/INTEGRATION.md) is the hand-off for the pipeline and API teams.
 
+## In plain terms
+
+Picture a library of 240,000 books where every book carries about 200 stickers: "has
+pictures", "region: Europe", "page count: 312". Today, answering "how many books have
+pictures AND are from Europe AND have 50 to 500 pages?" means walking the whole building
+and checking every book. The sidebar that shows "Europe (1,204), Asia (877), ..." walks the
+building once per sticker type. That is the full-table-scan problem.
+
+facetindex builds a card catalog instead. For every sticker value there is one card listing
+exactly which books carry it. The cards are compressed bitmaps, so each one is tiny and
+overlapping two of them takes microseconds. The question above is three cards overlapped.
+The sidebar is the same trick repeated for every card, about ten milliseconds for all 200
+sticker types. Sorting and numeric ranges use two small side structures built at the same
+time.
+
+The catalog is rebuilt from scratch on every reload, by the pipeline that does the reload,
+as a folder of ordinary Parquet files. A new load writes a new folder and flips one pointer
+file; API workers switch on their next request and never see a half-built folder.
+
+Three things are deliberately left alone:
+
+* **The wide serving table stays exactly as it is.** The index answers "which ids match and
+  how many". Display rows are fetched by primary key, the one thing that table already does
+  fast.
+* **Long free text is never indexed.** Only its presence is recorded. Searching inside it
+  still goes to SQL, and `filters.to_sql()` writes that SQL for you.
+* **Nothing is shared between worker processes.** Each one opens its own read-only copy.
+  No cache to invalidate, no locks, no background threads.
+
+## Adopting it in an existing project
+
+Two touch points, nothing else changes. The full walkthrough, with the screen-by-screen
+mapping and an operational checklist, is in [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
+
+1. **Pipeline, once per load:** `build_index(load_parquet, root, version=load_id, publish=False)`,
+   swap the serving table as you do today, then `set_current(root, load_id)`. About 20 s at
+   240k rows on 4 cores. The root must be readable by the API hosts.
+2. **API, once per worker:** `catalog = Catalog(root)`; per request `idx = catalog.get()`, then
+   `idx.page()`, `idx.facets()`, `idx.segment_counts()`, `idx.ids_for()` and `idx.catalog()`
+   replace the scans. Fetch the 50 display rows with `WHERE id = ANY(%s)`.
+
+Your UI's filter controls need to emit the filter JSON described below; that is the main
+piece of real work, and it is the same work for any backend. Before wiring anything, run
+`facetindex build` on one real load file and read `facetindex catalog --brief`: if an
+inferred kind is wrong, `ProfileConfig.kind_overrides` is the fix.
+
 ## Quick start
 
 ```bash
