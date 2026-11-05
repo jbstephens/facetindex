@@ -18,6 +18,7 @@ import math
 import os
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,6 +125,49 @@ def _column_stats(col: pa.Array, num: np.ndarray, top_n: int) -> tuple[Pass2, pa
     return p2, low, enc
 
 
+def _process_column(c: str, col: pa.Array, num: np.ndarray, p1c: dict, cfg: ProfileConfig, n_rows: int,
+                    all_pos: np.ndarray):
+    """Everything the index needs from one short column, from its Arrow values in position order.
+
+    Returns (name, pass-2 stats, profile, postings [(kind, value, positions)], numeric (values, positions)
+    sorted or None, dense sort key or None). Pure function of its inputs, so columns run in parallel.
+    """
+    stats, low, enc = _column_stats(col, num, cfg.top_n)
+    prof = make_profile(cfg, c, n_rows, p1c, stats)
+    valid = pc.is_valid(col).to_numpy(zero_copy_only=False)
+    present = all_pos[valid]
+    posts: list[tuple[str, str | None, np.ndarray]] = [("present", None, present)]
+    truthy = falsy = None
+    if prof.kind == "flag":
+        truthy = pc.fill_null(pc.is_in(low, value_set=_TRUTHY), False).to_numpy(zero_copy_only=False)
+        falsy = pc.fill_null(pc.is_in(low, value_set=_FALSY), False).to_numpy(zero_copy_only=False)
+        posts.append(("true", None, all_pos[truthy]))
+        posts.append(("false", None, all_pos[falsy]))
+    elif prof.facetable:
+        idx = pc.fill_null(enc.indices, 0).to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
+        vidx = idx[valid]
+        order = np.argsort(vidx, kind="stable")
+        bounds = np.searchsorted(vidx[order], np.arange(len(enc.dictionary) + 1))
+        for k, val in enumerate(enc.dictionary.to_pylist()):
+            posts.append(("value", val, present[order[bounds[k] : bounds[k + 1]]]))
+    numeric = None
+    if stats.numeric_count > 0:
+        nz = np.flatnonzero(~np.isnan(num))
+        o = np.argsort(num[nz], kind="stable")  # stable => ties ordered by position
+        numeric = (num[nz][o], nz[o].astype(np.uint32))
+    key = None
+    if prof.sortable:
+        if prof.kind == "numeric":
+            key = num
+        elif prof.kind == "flag":
+            key = np.full(n_rows, np.nan)
+            key[truthy] = 1.0
+            key[falsy] = 0.0
+        else:
+            key = _text_rank_key(low)
+    return c, stats, prof, posts, numeric, key
+
+
 def _text_rank_key(low: pa.Array) -> np.ndarray:
     """Dense rank (1-based) of the lower-cased value in byte order; NaN where missing."""
     enc = pc.dictionary_encode(low)
@@ -193,16 +237,19 @@ def build_index(
 
     # ---- canonical positions: rows sorted by id; narrow normalised table in DuckDB ------------
     log(f"materialising narrow table ({len(short_attrs)} short, {len(long_attrs)} long, {len(empty_attrs)} empty)")
-    pos_expr = f"(row_number() OVER (ORDER BY CAST({qi(id_column)} AS VARCHAR)) - 1)::UINTEGER"
-    sel = ", ".join(f"{nonempty_expr(f'CAST({qi(c)} AS VARCHAR)')} AS {qi(c)}" for c in short_attrs)
+    # positions come from a tiny (id, pos) table joined back to the source: much cheaper than a
+    # window function over every column.
     con.execute(
-        f"CREATE TABLE narrow AS SELECT CAST({qi(id_column)} AS VARCHAR) AS __id, {pos_expr} AS __pos"
-        + (", " + sel if sel else "") + " FROM src"
+        f"CREATE TABLE posmap AS SELECT CAST({qi(id_column)} AS VARCHAR) AS __id, "
+        f"(row_number() OVER (ORDER BY CAST({qi(id_column)} AS VARCHAR)) - 1)::UINTEGER AS __pos FROM src"
     )
+    join = f"FROM src s JOIN posmap p ON p.__id = CAST(s.{qi(id_column)} AS VARCHAR)"
+    sel = ", ".join(f"{nonempty_expr(f'CAST(s.{qi(c)} AS VARCHAR)')} AS {qi(c)}" for c in short_attrs)
+    con.execute("CREATE TABLE narrow AS SELECT p.__pos" + (", " + sel if sel else "") + f" {join}")
 
     build_dir = A.new_build_dir(root, version)
     try:
-        ids_tbl = con.sql("SELECT __id AS id FROM narrow ORDER BY __pos").to_arrow_table()
+        ids_tbl = con.sql("SELECT __id AS id FROM posmap ORDER BY __pos").to_arrow_table()
         pq.write_table(ids_tbl, build_dir / A.IDS, compression="zstd")
 
         postings = _Postings()
@@ -217,11 +264,11 @@ def build_index(
         # ---- long and empty columns: fill bitmaps only, one scan of the source -------------
         if long_attrs:
             log("long text: fill bitmaps")
-            flags = ", ".join(f"{nonempty_expr(f'CAST({qi(c)} AS VARCHAR)')} IS NOT NULL AS {qi(c)}" for c in long_attrs)
-            long_cols = ", ".join(qi(c) for c in long_attrs)
-            lt = con.sql(f"SELECT {flags} FROM (SELECT {pos_expr} AS __pos, {long_cols} FROM src) ORDER BY __pos").to_arrow_table()
+            flags = ", ".join(f"{nonempty_expr(f'CAST(s.{qi(c)} AS VARCHAR)')} IS NOT NULL AS {qi(c)}" for c in long_attrs)
+            lt = con.sql(f"SELECT p.__pos, {flags} {join}").to_arrow_table()
+            lpos = lt.column("__pos").to_numpy()
             for c in long_attrs:
-                present = np.flatnonzero(lt.column(c).to_numpy(zero_copy_only=False))
+                present = np.sort(lpos[lt.column(c).to_numpy(zero_copy_only=False)])
                 postings.add(c, "present", None, present)
                 profiles[c] = make_profile(cfg, c, n_rows, p1[c], p2[c])
             del lt
@@ -230,66 +277,52 @@ def build_index(
             profiles[c] = make_profile(cfg, c, n_rows, p1[c], None)
 
         # ---- the sweep: short columns in Arrow batches ------------------------------------------
-        log("sweep: statistics, postings, keys, numeric arrays")
+        log("sweep: statistics, postings, keys, numeric arrays, values")
+        (build_dir / A.VALUES_DIR).mkdir()
+        value_files: dict[str, str] = {}
         all_pos = np.arange(n_rows, dtype=np.uint32)
-        for i in range(0, len(short_attrs), cfg.batch_size):
-            batch = short_attrs[i : i + cfg.batch_size]
-            cols = ", ".join(qi(c) for c in batch)
-            nums = ", ".join(f"{numeric_expr_normalised(qi(c))} AS {qi('__n_' + c)}" for c in batch)
-            tbl = con.sql(f"SELECT {cols}, {nums} FROM narrow ORDER BY __pos").to_arrow_table()
-            for c in batch:
-                col = tbl.column(c).combine_chunks()
-                num = tbl.column("__n_" + c).to_numpy(zero_copy_only=False).astype(np.float64, copy=False)  # NaN = NULL
-                stats, low, enc = _column_stats(col, num, cfg.top_n)
-                p2[c] = stats
-                prof = make_profile(cfg, c, n_rows, p1[c], stats)
-                profiles[c] = prof
-                valid = pc.is_valid(col).to_numpy(zero_copy_only=False)
-                present = all_pos[valid]
-                postings.add(c, "present", None, present)
-                if prof.kind == "flag":
-                    postings.add(c, "true", None, all_pos[pc.fill_null(pc.is_in(low, value_set=_TRUTHY), False).to_numpy(zero_copy_only=False)])
-                    postings.add(c, "false", None, all_pos[pc.fill_null(pc.is_in(low, value_set=_FALSY), False).to_numpy(zero_copy_only=False)])
-                elif prof.facetable:
-                    idx = pc.fill_null(enc.indices, 0).to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
-                    vidx = idx[valid]
-                    order = np.argsort(vidx, kind="stable")
-                    bounds = np.searchsorted(vidx[order], np.arange(len(enc.dictionary) + 1))
-                    for k, val in enumerate(enc.dictionary.to_pylist()):
-                        postings.add(c, "value", val, present[order[bounds[k] : bounds[k + 1]]])
-                # numeric sorted (value, position) for every column with any numeric values
-                if stats.numeric_count > 0:
-                    nz = np.flatnonzero(~np.isnan(num))
-                    o = np.argsort(num[nz], kind="stable")  # stable => ties ordered by position
-                    ns_writer.write_table(pa.table({"value": num[nz][o], "position": nz[o].astype(np.uint32)}, schema=ns_schema))
-                    numeric_row_groups[c] = rg
-                    rg += 1
-                # dense sort key
-                if prof.sortable:
-                    if prof.kind == "numeric":
-                        key = num
-                    elif prof.kind == "flag":
-                        key = np.full(n_rows, np.nan)
-                        key[pc.fill_null(pc.is_in(low, value_set=_TRUTHY), False).to_numpy(zero_copy_only=False)] = 1.0
-                        key[pc.fill_null(pc.is_in(low, value_set=_FALSY), False).to_numpy(zero_copy_only=False)] = 0.0
-                    else:
-                        key = _text_rank_key(low)
-                    pq.write_table(pa.table({"key": pa.array(key, pa.float64(), from_pandas=True)}),
-                                   build_dir / A.KEYS_DIR / f"{_safe_name(c)}.parquet", compression="zstd")
-                    key_attrs.append(c)
-            del tbl
+        pool = ThreadPoolExecutor(max_workers=threads or min(8, os.cpu_count() or 1))
+        try:
+            for bi, i in enumerate(range(0, len(short_attrs), cfg.batch_size)):
+                batch = short_attrs[i : i + cfg.batch_size]
+                cols = ", ".join(qi(c) for c in batch)
+                nums = ", ".join(f"{numeric_expr_normalised(qi(c))} AS {qi('__n_' + c)}" for c in batch)
+                tbl = con.sql(f"SELECT __pos, {cols}, {nums} FROM narrow").to_arrow_table()
+                # rows arrive in hash-join order; permute the batch into position order once (O(n), no sort)
+                pos = tbl.column("__pos").to_numpy()
+                inv = np.empty(n_rows, dtype=np.int64)
+                inv[pos] = np.arange(n_rows)
+                tbl = tbl.take(pa.array(inv))
+                del pos, inv
+
+                def work(c, tbl=tbl):
+                    col = tbl.column(c).combine_chunks()
+                    num = tbl.column("__n_" + c).to_numpy(zero_copy_only=False).astype(np.float64, copy=False)
+                    return _process_column(c, col, num, p1[c], cfg, n_rows, all_pos)
+
+                for c, stats, prof, posts, numeric, key in pool.map(work, batch):
+                    p2[c] = stats
+                    profiles[c] = prof
+                    for kind, val, positions in posts:
+                        postings.add(c, kind, val, positions)
+                    if numeric is not None:
+                        ns_writer.write_table(pa.table({"value": numeric[0], "position": numeric[1]}, schema=ns_schema))
+                        numeric_row_groups[c] = rg
+                        rg += 1
+                    if key is not None:
+                        pq.write_table(pa.table({"key": pa.array(key, pa.float64(), from_pandas=True)}),
+                                       build_dir / A.KEYS_DIR / f"{_safe_name(c)}.parquet", compression="zstd")
+                        key_attrs.append(c)
+                vf = f"{A.VALUES_DIR}/values-{bi:03d}.parquet"
+                pq.write_table(tbl.select(batch), build_dir / vf, compression="zstd", compression_level=1,
+                               row_group_size=65536)
+                for c in batch:
+                    value_files[c] = vf
+                del tbl
+        finally:
+            pool.shutdown(wait=True)
         ns_writer.close()
         pq.write_table(postings.table(), build_dir / A.POSTINGS, compression="zstd")
-
-        # ---- values: the narrow normalised table, one column per short attribute ------------------
-        log("writing narrow values table")
-        if short_attrs:
-            con.execute(
-                f"COPY (SELECT {', '.join(qi(c) for c in short_attrs)} FROM narrow ORDER BY __pos) "
-                f"TO {_sql_str((build_dir / A.VALUES).as_posix())} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 65536)"
-            )
-        else:
-            pq.write_table(pa.table({"__empty": pa.nulls(n_rows, pa.bool_())}), build_dir / A.VALUES)
 
         # ---- optional forward index (the "signals key") -----------------------------------------
         if with_signatures:
@@ -305,7 +338,8 @@ def build_index(
             format_version=A.FORMAT_VERSION, row_count=int(n_rows), id_column=id_column,
             source={"path": os.path.abspath(source), "fingerprint": source_fingerprint(source)},
             columns=attrs, kinds=kinds, numeric_row_groups=numeric_row_groups, key_attrs=key_attrs,
-            value_attrs=short_attrs, files={}, build_seconds=0.0, has_signatures=with_signatures,
+            value_attrs=short_attrs, value_files=value_files, files={}, build_seconds=0.0,
+            has_signatures=with_signatures,
         )
         manifest.files = A.inventory(build_dir)
         manifest.build_seconds = round(time.time() - t0, 3)

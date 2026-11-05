@@ -77,8 +77,77 @@ F.to_sql(f)                                           # ('(LOWER(TRIM("has_api")
 <!-- BENCH:BEGIN -->
 ## Benchmarks
 
-Numbers pending; see `bench/out/`.
+Synthetic table shaped like the problem (200 all-text columns: 62 flags, 44 categoricals, 49 numerics, 39 short text, 4 long text of 1-8 KB at 30% fill, 2 empty), 4-vCPU container, single process. Filters are ANDs of 2-4 clauses over flags, categoricals and numeric ranges. Reproduce with `bench/run_bench.py` and `bench/pg_bench.py`; raw results in `bench/out/`.
+
+### Build and footprint
+
+| | 240k rows | 1M rows |
+|---|---|---|
+| build time (pipeline side, DuckDB + Arrow) | 20 s | 62 s |
+| artifact size, all files | 134 MB | 481 MB |
+| of which postings (bitmaps) | 16 MB | 66 MB |
+| of which sort keys (lazy) | 33 MB | 127 MB |
+| of which numeric arrays (lazy) | 49 MB | 142 MB |
+| of which narrow text values (lazy) | 37 MB | 146 MB |
+| open per worker (postings + ids) | 114 ms | 361 ms |
+| warm everything (optional) | 6.3 s | 24.6 s |
+| value bitmaps | 933 | 970 |
+
+### Query latency (p50 / p95, milliseconds)
+
+| workload | 240k rows | 1M rows |
+|---|---|---|
+| facetindex count (AND of 2-4 clauses) | 0.3 / 3.8 | 2.0 / 21.5 |
+| facetindex page 50 sorted by random attribute (warm keys) | 0.7 / 4.5 | 2.2 / 20.6 |
+| facetindex page 50 by id | 0.4 / 4.3 | 2.2 / 18.5 |
+| facetindex facets for all facetable attrs | 9.2 / 18.6 | 34.2 / 76.4 |
+| facetindex facets incl. numeric histograms | 40.0 / 63.6 | 166.3 / 241.3 |
+| facetindex 26 saved-segment counts (one list render) | 40.3 / 47.6 | 171.9 / 206.1 |
+| facetindex export: first 25k matching ids | 1.6 / 13.4 | 4.0 / 18.4 |
+| facetindex count with text-contains on a short text attr | 21.0 / 34.1 | 82.1 / 106.2 |
+| duckdb-on-parquet count (same filters) | 13.7 / 21.1 | 27.6 / 40.5 |
+| duckdb-on-parquet page 50 sorted by random attribute | 18.7 / 28.5 | 45.7 / 62.8 |
+| duckdb-on-parquet facets for 20 attrs (one GROUP BY each) | 292.2 / 400.8 | 633.0 / 837.5 |
+| duckdb in-memory narrow table count (same filters) | 13.8 / 26.1 | 28.0 / 56.2 |
+
+The DuckDB rows query the same Parquet file directly with the SQL rendered by `filters.to_sql(f, DUCKDB)`: that is the 'serve from the columnar file' alternative, and it is a strong one for counts and pages. The facet sidebar is where the bitmaps earn their keep: 110 attributes in ~10 ms versus one GROUP BY per attribute.
+
+### Postgres, same filters, 240k rows (local instance, table in page cache)
+
+Wide table 765 MB, JSONB copy 533 MB, narrow copy without long text 242 MB; shared_buffers 1GB; JSONB copy + GIN build 127.1 s; one partial index per flag on the narrow table 0.09 s to build.
+
+| workload | p50 ms | p95 ms | timeouts (30 s) |
+|---|---|---|---|
+| postgres wide text table: count (same filters, PK only) | 395 | 579 | 0 |
+| postgres wide text table: page 50 sorted by random attribute | 388 | 546 | 0 |
+| postgres wide text table: facets for 20 attrs (one GROUP BY each) | 8243 | 12225 | 0 |
+| postgres wide text table: facets for 20 attrs (unpivot, one pass) | 423 | 1126 | 0 |
+| postgres jsonb + GIN (jsonb_path_ops): count, flag/category-only filters | 4 | 67 | 0 |
+| postgres narrow text table (no long text): count (same filters) | 350 | 545 | 0 |
+
+Caveat: local Postgres, NVMe, table in page cache; the production instance on network storage with a table larger than shared_buffers measured 2-4 s per scan. The gap on real hardware is wider than shown here.
+
+Two things worth noticing. Once the table is cached, Postgres is CPU-bound on evaluating TRIM/regex/CASE over text columns for every row, which is why the narrow copy (3x smaller) is barely faster than the wide table: typed columns would help more than narrowing. And JSONB + GIN is genuinely fast for the filters it can serve (flags and categories by containment), but it cannot serve numeric ranges, sorting or facet counts, and its copy took two minutes to build, which does not fit a one-load-per-minute cadence.
 <!-- BENCH:END -->
+
+## Use it whole or in pieces
+
+If you are already building something like this, the parts are separable:
+
+* **Just the profile.** `facetindex.profile.profile_parquet()` gives the per-attribute
+  statistics (fill, distinct, true count, min/max, top values, sample, inferred kind) from
+  DuckDB in a few seconds. Write it wherever your catalog reads from and the live profile
+  on the serving database is gone.
+* **Just the filter language.** `facetindex.filters` is a small, serialisable AST with
+  pinned semantics and `to_sql()` for Postgres or DuckDB. Saved segments become JSON;
+  composition is a `segment` node. Nothing in it depends on the index.
+* **Just the postings.** `postings.parquet` is `(attribute, kind, value, cardinality,
+  roaring bitmap)`. Any language with a roaring library reads it; DuckDB reads it as a table.
+  If you want the bitmaps in a different store, this is the file to load.
+* **Just the versioning.** `facetindex.artifact` is the build-dir / rename / pointer-file
+  pattern with `retain()`. It works for any per-load artefact, not only this one.
+* **The forward signature.** `--signatures` emits the per-entity bitset with its bit
+  dictionary, if a narrow `bit(n)` column in Postgres is the shape you want.
 
 ## The artifact
 
@@ -91,12 +160,12 @@ Numbers pending; see `bench/out/`.
   postings.parquet                    (attribute, kind, value, cardinality, roaring bitmap): present / true / false / value
   numeric_sorted.parquet              one row group per numeric-capable attribute: (value, position) sorted
   keys/<attr>.parquet                 dense float64 sort key per position (NaN = missing)
-  values.parquet                      normalised text of every short attribute (a narrow typed table in waiting)
+  values/values-NNN.parquet           normalised text of the short attributes, ~24 per file (a narrow typed table in waiting)
   signatures.parquet, dimensions.json optional forward index: one bitset per entity (--signatures)
 ```
 
-Everything is plain Parquet and JSON. DuckDB can read the postings table; `values.parquet`
-is literally the narrow serving table if you ever want one in Postgres.
+Everything is plain Parquet and JSON. DuckDB can read the postings table; the `values/`
+files are literally the narrow serving table if you ever want one in Postgres.
 
 ## Filters
 

@@ -2,7 +2,7 @@
 
 Every query reduces to roaring-bitmap algebra over entity *positions* (0..n-1, sorted by
 id). Nothing here touches the serving database; the API fetches display rows afterwards
-with a primary-key lookup (``WHERE id = ANY(%s)``) or from ``values.parquet``.
+with a primary-key lookup (``WHERE id = ANY(%s)``) or from the artifact's narrow values files.
 
 No background threads, no locks: a FacetIndex is immutable once opened, so any number of
 worker processes can hold one each. Lazy members (sort keys, numeric arrays, text values)
@@ -87,7 +87,6 @@ class FacetIndex:
         self._numeric_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._key_cache: dict[str, np.ndarray] = {}
         self._values_cache: dict[str, pa.Array] = {}
-        self._values_file = pq.ParquetFile(self.path / A.VALUES) if (self.path / A.VALUES).exists() else None
         self._numeric_file = (pq.ParquetFile(self.path / A.NUMERIC_SORTED)
                               if (self.path / A.NUMERIC_SORTED).exists() else None)
 
@@ -164,10 +163,11 @@ class FacetIndex:
 
     def _values(self, attr: str) -> pa.Array:
         if attr not in self._values_cache:
-            if attr not in self.manifest.value_attrs or self._values_file is None:
+            vf = self.manifest.value_files.get(attr)
+            if vf is None:
                 raise UnsupportedInIndex(
                     f"attribute {attr!r} has no stored values (kind={self.kinds.get(attr)}); use filters.to_sql()")
-            self._put(self._values_cache, attr, self._values_file.read(columns=[attr]).column(attr).combine_chunks())
+            self._put(self._values_cache, attr, pq.read_table(self.path / vf, columns=[attr]).column(attr).combine_chunks())
         return self._values_cache[attr]
 
     # ------------------------------------------------------------------ evaluation

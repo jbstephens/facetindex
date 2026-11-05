@@ -102,8 +102,9 @@ def main():
     report["warm_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     report["rows"] = idx.n
     report["attributes"] = len(idx.kinds)
-    report["files"] = {k: v for k, v in idx.manifest.files.items() if not k.startswith("keys/")}
+    report["files"] = {k: v for k, v in idx.manifest.files.items() if not k.startswith(("keys/", "values/"))}
     report["files"]["keys/* (total)"] = sum(v for k, v in idx.manifest.files.items() if k.startswith("keys/"))
+    report["files"]["values/* (total)"] = sum(v for k, v in idx.manifest.files.items() if k.startswith("values/"))
     report["postings_count"] = sum(len(v) for v in idx.values_postings.values()) + len(idx.present) + len(idx.flag_true) * 2
 
     filters = typical_filters(idx.stats, rng, args.queries)

@@ -70,7 +70,7 @@ The split facetindex implements:
 | `stats.json` (per-attribute profile) | pipeline, DuckDB | API, once per version | the live profile (15-20 s) |
 | `postings.parquet` (roaring bitmaps) | pipeline | API, loaded per worker | every COUNT / facet scan |
 | `numeric_sorted.parquet` + `keys/` | pipeline | API, lazily per attribute | numeric ranges and sort-by-anything scans |
-| `values.parquet` (narrow normalised table) | pipeline | API, lazily per attribute | text-contains scans; optionally a narrow serving table |
+| `values/*.parquet` (narrow normalised table) | pipeline | API, lazily per attribute | text-contains scans; optionally a narrow serving table |
 | the wide serving table | pipeline (unchanged) | API, by primary key only | nothing, it stays |
 
 If you would rather not run the engine in the API process, two off-the-shelf options do
@@ -112,8 +112,8 @@ Tradeoffs worth knowing:
 
 Evaluate on demand against the bitmaps. A segment is a filter; a composed segment is a
 filter with `Segment(name)` leaves. Evaluation memoises each referenced segment within a
-query and refuses cycles. Twenty-six segment counts in one list render cost about a
-millisecond in the bench.
+query and refuses cycles. Twenty-six segment counts in one list render cost about
+40 ms at 240k rows in the bench, most of it wide numeric ranges.
 
 Do **not** materialise segment membership per load: segments are edited between loads,
 so a materialised view is stale the moment an admin saves, and you would need an
@@ -159,7 +159,7 @@ Worth doing regardless, in this order:
    table size substantially.
 3. **Typed columns in a narrow serving table.** Booleans as `boolean` (1 byte) and
    numbers as `numeric`/`double` shrink the heap further and make numeric sort correct.
-   `values.parquet` is exactly this table; `COPY` it if you want it in Postgres.
+   The `values/` files are exactly this table; `COPY` them if you want it in Postgres.
 4. **Move long text to a side table** keyed by id. It helps less than people expect for
    scans (it is already out of line), but it stops anyone accidentally touching it in a
    wide `SELECT *` or a `count(DISTINCT)`.
@@ -253,7 +253,7 @@ up as facet values *and* supports ranges. Thresholds live in `ProfileConfig`.
 
 ## 7. Scaling notes
 
-* Postings: 240k entities, about 1,000 value bitmaps, under 10 MB on disk. Roaring keeps
+* Postings: 240k entities, about 1,000 bitmaps, 16 MB on disk (66 MB at 1M rows). Roaring keeps
   sparse flags (1% true) as tiny arrays and dense ones as bitsets or runs.
 * Keys: 8 bytes x rows per sortable attribute, lazily loaded. At 1M rows and 150
   sortable attributes that is 1.2 GB if you warm everything, so do not; a worker loads

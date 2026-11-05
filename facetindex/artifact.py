@@ -12,7 +12,7 @@ Layout::
           postings.parquet         # (attribute, kind, value, cardinality, roaring bitmap bytes)
           numeric_sorted.parquet   # one row group per numeric-capable attribute: (value, position)
           keys/<attr>.parquet      # dense float64 sort key per position (NaN = missing)
-          values.parquet           # normalised text of every short attribute (the narrow table)
+          values/values-NNN.parquet  # normalised text of the short attributes, ~24 per file (the narrow table)
           signatures.parquet       # optional forward index: id -> per-entity bitset
           dimensions.json          # optional: which bit means which (attribute, value)
 
@@ -41,7 +41,7 @@ IDS = "ids.parquet"
 POSTINGS = "postings.parquet"
 NUMERIC_SORTED = "numeric_sorted.parquet"
 KEYS_DIR = "keys"
-VALUES = "values.parquet"
+VALUES_DIR = "values"
 SIGNATURES = "signatures.parquet"
 DIMENSIONS = "dimensions.json"
 CURRENT = "CURRENT"
@@ -60,7 +60,8 @@ class Manifest:
     kinds: dict[str, str]                      # attr -> kind
     numeric_row_groups: dict[str, int]         # attr -> row group index in numeric_sorted.parquet
     key_attrs: list[str]                       # attrs with keys/<attr>.parquet
-    value_attrs: list[str]                     # attrs present in values.parquet
+    value_attrs: list[str]                     # attrs with stored text values
+    value_files: dict[str, str]                # attr -> relative path of the values file holding it
     files: dict[str, int] = field(default_factory=dict)   # relative path -> bytes
     build_seconds: float = 0.0
     has_signatures: bool = False
@@ -73,6 +74,7 @@ class Manifest:
     def from_json(cls, s: str) -> Manifest:
         d = json.loads(s)
         d.setdefault("has_signatures", False)
+        d.setdefault("value_files", {})
         d.setdefault("library_version", "unknown")
         return cls(**d)
 
